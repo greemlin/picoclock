@@ -17,21 +17,22 @@ from umqtt.simple import MQTTClient
 
 # variables
 sensor_name = 'NK Clock'
-ssid = 'KanariNET1'
-ssid2 = 'KorrLAN'
-psw = 'Ka11p**!bio210373abc'
-psw2 = "K0rrL@nW1f1"
-UTC_OFFSET = 3 * 60 * 60
-NTP_DELTA = 2208988800
-host = "pool.ntp.org"
+ssid_ = 'KanariNET1'
+ssid = 'KorrLAN'
+psw_ = 'Ka11p**!bio210373abc'
+psw = "K0rrL@nW1f1"
+UTC_OFFSET = 2 * 3600  # UTC+2 hours for Greek Time
+DST_OFFSET = 1 * 3600  # Additional 1 hour for DST
+NTP_DELTA = 2208988800  # NTP time delta
+host = "gr.pool.ntp.org"  # NTP server
 displaying_temp = False
-mqtt_broker = "192.168.1.55"
-mqtt_username = "<mqtt_username>"
-mqtt_password = "<mqtt_password>"
-mqtt_topic = "<mqtt_topic>"
-x = 0
+mqtt_broker = "YourMQTTBrokerIP"
+mqtt_username = "YourMQTTUsername"
+mqtt_password = "YourMQTTPassword"
+mqtt_topic = "YourMQTTTopic"
 sync_successful = False
 sync_in_progress = False
+displaying_temp = False
 
 # Setup
 timer = Timer()
@@ -42,8 +43,31 @@ spi = SPI(0, baudrate=10000000, polarity=1, phase=0, sck=Pin(2), mosi=Pin(3))
 ss = Pin(5, Pin.OUT)
 wlan = network.WLAN(network.STA_IF)
 display = max7219.Matrix8x8(spi, ss, 4)
-display.brightness(1)
+display.brightness(0)
 lock = _thread.allocate_lock()
+
+def adjust_display_brightness_by_time():
+    current_time = rtc.datetime()  # Get the current time
+    hour = current_time[4]  # Hour is at index 4
+
+    # Set brightness based on the hour
+    if 6 <= hour <= 18:  # Day time
+        display.brightness(1)  # Brighter for daytime
+    else:  # Night time
+        display.brightness(0)  # Dimmer for nighttime
+
+def is_dst(now=None):
+    if now is None:
+        now = utime.localtime()
+    year, month, day, hour, _, _, wday, yday = now
+    # Start and end dates of DST
+    dst_start = utime.mktime((year, 3, (31 - (int(5 * year / 4 + 4) % 7)), 2, 0, 0, 0, 0, 0))
+    dst_end = utime.mktime((year, 10, (31 - (int(5 * year / 4 + 1) % 7)), 3, 0, 0, 0, 0, 0))
+    # Check if current date is within the DST period
+    if utime.mktime(now) >= dst_start and utime.mktime(now) < dst_end:
+        return True
+    return False
+
 
 def connect():
     display_corner()
@@ -108,12 +132,13 @@ def sync_time():
                 display_synch()
                 ntptime.settime()
                 set_time()
+                adjust_display_brightness_by_time()  # Adjust brightness based on time
                 sync_successful = True
-                break  # time synchronization successful, break the loop
+                break
             except Exception as e:
                 sync_successful = False
-                if i < retries - 1:  # No delay on last attempt
-                    time.sleep(5)  # delay between retries
+                if i < retries - 1:
+                    time.sleep(5)
             finally:
                 lock.release()
                 reset_display()
@@ -127,27 +152,28 @@ def display_mqtt():
     display.show()
 
 def set_time():
-    NTP_QUERY = bytearray(48)
-    NTP_QUERY[0] = 0x1B
+    global sync_successful
     try:
-        addr = socket.getaddrinfo(host, 123)[0][-1]
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1)
-        res = s.sendto(NTP_QUERY, addr)
-        msg = s.recv(48)
-    finally:
-        s.close()
-    val = struct.unpack("!I", msg[40:44])[0]
-    t = val - NTP_DELTA + 3 * 60 * 60  
-    tm = time.gmtime(t)
-    machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
-
+        ntptime.host = host
+        ntptime.settime()
+        t = utime.time()
+        # Adjust time for UTC offset for Greek time
+        t += UTC_OFFSET
+        # Check if DST is in effect and adjust time if needed
+        if is_dst(utime.localtime(t)):
+            t += DST_OFFSET
+        tm = utime.localtime(t)
+        rtc.datetime((tm[0], tm[1], tm[2], 0, tm[3], tm[4], tm[5], 0))
+        sync_successful = True
+    except:
+        sync_successful = False
+        
 def init():
     reset_display()
     rp2.country('GR')
     connect()
     time.sleep(2)
-    sync_time()  # Perform the initial time synchronization
+    sync_time()
 
 def timer_callback(timer):
     asyncio.create_task(sync_time_async())
@@ -193,10 +219,12 @@ async def background_task():
 
 init()
 
+# Start the asyncio loop
 loop = asyncio.get_event_loop()
 loop.create_task(background_task())
-
 timer.init(period=24*60*60*1000, mode=Timer.PERIODIC, callback=timer_callback)
+
+x=0
 
 while True:
     if not displaying_temp:
@@ -216,6 +244,7 @@ while True:
             display.pixel(15, 5, 1)
         display.show()
     time.sleep(1)
-    if x == 20:
+    if x == 30:
         _thread.start_new_thread(get_temperature_ext, ())
         x = 0
+
